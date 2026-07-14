@@ -5,18 +5,15 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import asyncio
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
 from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings,ChatGoogleGenerativeAI
 from langchain_postgres import PGEngine, PGVectorStore
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from google.genai import types
 import time
 import pdfplumber
 from google import genai
+from sqlalchemy.exc import ProgrammingError
 
 load_dotenv()
 
@@ -63,7 +60,7 @@ def process_and_chunk_pdf(file_path):
     return document_chunks
 
 
-def createVectorStore():
+async def createVectorStore():
     embeddings_model=GoogleGenerativeAIEmbeddings(
         model="gemini-embedding-001",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
@@ -73,7 +70,9 @@ def createVectorStore():
 
     db_engine=PGEngine.from_connection_string(url=Connection_string)
 
-    vector_store=PGVectorStore.create_sync(
+    
+
+    vector_store= await PGVectorStore.create(
         engine=db_engine,
         table_name=Table_name,
         embedding_service=embeddings_model
@@ -82,7 +81,7 @@ def createVectorStore():
 
 
 
-def embed_chunks(document_chunks):
+async def embed_chunks(document_chunks):
     embeddings_model=GoogleGenerativeAIEmbeddings(
         model="gemini-embedding-001",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
@@ -93,17 +92,30 @@ def embed_chunks(document_chunks):
 
     print("Generating Embedding...")
     db_engine=PGEngine.from_connection_string(url=Connection_string)
-    vector_store=PGVectorStore.create_sync(
+
+
+    try:
+        await db_engine.ainit_vectorstore_table(
+            table_name=Table_name,
+            vector_size=Vector_size
+        )
+    except ProgrammingError as e:
+        if not "already exists" in str(e):
+            raise e
+
+
+
+    vector_store=await PGVectorStore.create(
         engine=db_engine,
         table_name=Table_name,
         embedding_service=embeddings_model
     )
 
-    vector_store.add_documents(document_chunks)
+    await vector_store.aadd_documents(document_chunks)
 
 
-def retrieve_context(query,vector_store,k=2,threshold_score=0.8):
-    releventDocuments=vector_store.similarity_search_with_score(query,k=k)
+async def retrieve_context(query,vector_store,k=2,threshold_score=0.8):
+    releventDocuments=await vector_store.asimilarity_search_with_score(query,k=k)
     filteredDocuments=[]
     for releventDocument,score in releventDocuments:
         if(score<=threshold_score):
@@ -112,16 +124,12 @@ def retrieve_context(query,vector_store,k=2,threshold_score=0.8):
     return filteredDocuments
 
 
-def generateAnswers(filterDocuments,query):
+async def generateAnswers(filterDocuments,query):
     
-    llm=ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0.0
-    )
+   
 
     if not filterDocuments:
-        return f"I'm sorry but no relevent asnwer found in database for query: '{query}'"
+        return None
     
     releventText = "\n\n".join([doc.page_content for doc in filterDocuments])
 
@@ -133,7 +141,7 @@ def generateAnswers(filterDocuments,query):
     
     prompt_content=f"Context Chunks:{releventText}\n\nQuestion:{query}"
 
-    reponse=client.models.generate_content_stream(
+    reponse=await client.aio.models.generate_content_stream(
         model="gemini-3.5-flash",
         contents=prompt_content,
         config=types.GenerateContentConfig(
@@ -153,40 +161,63 @@ def generateAnswers(filterDocuments,query):
 
 
 
-query="tell me about M-20"
+
+async def printAnswer(releventAnswer,start_time):
+    
+    
+    print(f"Answer Generation Time: {time.time()-start_time} seconds")
+    start_time=time.time()
+    print("Answer:\n\n")
+    print("----------------------------------------------------------")
+
+    if releventAnswer is None:
+        print("I am sorry but the provided document does not contain that Information.")
+        return
+    print("Waiting For API Connection...")
+
+    firstTokenRecieved=False
+    TFFT=0.0
+
+    async for chunks in releventAnswer:
+
+        if not firstTokenRecieved:
+            TFFT=time.time()-start_time
+            print(f"Connection Established! TFFT: {TFFT:.2f} seconds")
+            firstTokenRecieved=True
+
+        print(chunks.text,end="",flush=True)
+
+    print("\n----------------------------------------------------------")
+
+    total_time=time.time()-start_time
+    print(f"Actual Answer Generation Time: {total_time} seconds")
+
+    if(firstTokenRecieved):
+        print(f"Actual Time for streaming the response: {total_time-TFFT:.2f} seconds")
 
 
-print("Retrieving relevant documents...")
-start_time=time.time()
-releventDocuments=retrieve_context(query,createVectorStore(),4,0.7)
-print(f"DataBase retrieval time: {time.time()-start_time} seconds")
+async def GenerateRespone():
+    query="tell me about M-20"
+    print("Retrieving relevant documents...")
+    start_time=time.time()
+    vectorStore=await createVectorStore()
+    releventDocuments=await retrieve_context(query,vectorStore,4,0.7)
+    print(f"DataBase retrieval time: {time.time()-start_time} seconds")
+    start_time=time.time()
+    print("Retrieving relevant response from LLM...")
+    releventAnswer=await generateAnswers(releventDocuments,query)
+    await printAnswer(releventAnswer,start_time)
+    
 
-start_time=time.time()
-print("Retrieving relevant response from LLM...")
-releventAnswer=generateAnswers(releventDocuments,query)
-print(f"Answer Generation Time: {time.time()-start_time} seconds")
+async def ingestionPipeline():
+    documentChunks=process_and_chunk_pdf('')
+    if documentChunks:
+        await embed_chunks(documentChunks)
 
-start_time=time.time()
-print("Answer:\n\n")
-print("----------------------------------------------------------")
-print("Waiting For API Connection...")
 
-firstTokenRecieved=False
-TFFT=0.0
+def main():
+    asyncio.run(GenerateRespone())
 
-for chunks in releventAnswer:
+main()
 
-    if not firstTokenRecieved:
-        TFFT=time.time()-start_time
-        print(f"Connection Established! TFFT: {TFFT:.2f} seconds")
-        firstTokenRecieved=True
 
-    print(chunks.text,end="",flush=True)
-
-print("\n----------------------------------------------------------")
-
-total_time=time.time()-start_time
-print(f"Actual Answer Generation Time: {total_time} seconds")
-
-if(firstTokenRecieved):
-    print(f"Actual Time for streaming the response: {total_time-TFFT:.2f} seconds")
