@@ -147,7 +147,7 @@ async def generateAnswers(filterDocuments,query):
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
 
-            temperature=1.0,
+            temperature=0.0,
             max_output_tokens=1000,
             thinking_config=types.ThinkingConfig(
                 thinking_level=types.ThinkingLevel.MINIMAL
@@ -197,7 +197,8 @@ async def printAnswer(releventAnswer,start_time):
 
 
 async def GenerateRespone():
-    query="tell me about M-20"
+    print("Enter Query: ")
+    query=input()
     print("Retrieving relevant documents...")
     start_time=time.time()
     vectorStore=await createVectorStore()
@@ -209,14 +210,15 @@ async def GenerateRespone():
     await printAnswer(releventAnswer,start_time)
     
 
-async def ingestionPipeline():
-    documentChunks=process_and_chunk_pdf('')
+async def ingestionPipeline(filePath):
+    documentChunks=process_and_chunk_pdf(filePath)
     if documentChunks:
         await embed_chunks(documentChunks)
 
 
 def main():
     asyncio.run(GenerateRespone())
+    # asyncio.run(ingestionPipeline('pdf/Internship_Module_Specs_Vol2.pdf'))
 
 main()
 
