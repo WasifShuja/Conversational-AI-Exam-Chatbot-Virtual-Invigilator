@@ -14,10 +14,33 @@ import time
 import pdfplumber
 from google import genai
 from sqlalchemy.exc import ProgrammingError
+import json
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
+app = FastAPI(title="M-20 Chatbot Engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+async def getVectorStore():
+    return await createVectorStore()
 
 
 
@@ -216,10 +239,53 @@ async def ingestionPipeline(filePath):
         await embed_chunks(documentChunks)
 
 
-def main():
-    asyncio.run(GenerateRespone())
-    # asyncio.run(ingestionPipeline('pdf/Internship_Module_Specs_Vol2.pdf'))
 
-main()
+@app.post("/api/chat/stream")
+async def streamChatbotApi(payload:ChatRequest,authorization:str=Header(None)):
+    query=payload.message
+
+    try: 
+        vectorStore=await getVectorStore()
+        releventDocuments=await retrieve_context(query,vectorStore,2,0.8)
+        geminiStream=await generateAnswers(releventDocuments,query)
+    except Exception as e:
+        raise HTTPException(status_code=500,detail=f"Backend proccessing failure: {str(e)}")
+    
+    async def sseTokenGenerator():
+        try:
+            if geminiStream is None:
+                noInfoMsg="I am sorry but the provided document does not contain that information."
+                yield f"data: {json.dumps({'token':noInfoMsg})}\n\n"
+                yield f"data: [Done]\n\n"
+                return
+            
+            async for chunk in geminiStream:
+                if chunk.text:
+                    yield f"data: {json.dumps({'token':chunk.text})}\n\n"
+
+            yield f"data: [Done]\n\n"
+        except Exception as streamingError:
+            yield f"data: {json.dumps({'error':str(streamingError)})}\n\n"
+
+    return StreamingResponse(sseTokenGenerator(),media_type="text/event-stream")
+
+
+
+
+
+
+
+
+
+
+if __name__=="__main__":
+    import uvicorn
+    uvicorn.run("ingestion_pipeline:app",host="127.0.0.1",port=8000,reload=True)
+
+
+    # asyncio.run(GenerateRespone())
+    # # asyncio.run(ingestionPipeline('pdf/Internship_Module_Specs_Vol2.pdf'))
+
+
 
 
