@@ -86,7 +86,6 @@ def get_student_profile_json(student_id: str = "2026-CS-64"):
         )
     }
 
-    # Fetch profile or default to empty structure
     student = mock_db.get(student_id)
     if not student:
         return "{}"

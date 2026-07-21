@@ -11,9 +11,7 @@ export default function App() {
   ]);
 
   const [input, setInput] = useState("");
-
   const [isLoading, setIsLoading] = useState(false);
-
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -24,7 +22,6 @@ export default function App() {
     e.preventDefault();
 
     if (!input.trim() || isLoading) return;
-
     const userMessage = input.trim();
     setInput("");
 
@@ -33,6 +30,7 @@ export default function App() {
       { role: "user", content: userMessage },
       { role: "assistant", content: "" },
     ]);
+
     const historyPayload = messages
       .filter((msg) => msg.content && msg.content.trim() !== "")
       .map((msg) => ({
@@ -42,8 +40,6 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      
-
       const response = await fetch("http://127.0.0.1:8000/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -60,13 +56,11 @@ export default function App() {
 
       while (true) {
         const { value, done } = await reader.read();
-
         if (done) {
           break;
         }
 
         buffer += decoder.decode(value, { stream: true });
-
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
