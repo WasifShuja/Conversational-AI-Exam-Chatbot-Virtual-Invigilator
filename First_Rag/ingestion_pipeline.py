@@ -19,6 +19,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from student_service import get_student_profile_json
 
 load_dotenv()
 
@@ -35,8 +36,14 @@ app.add_middleware(
 )
 
 
+
+class MessageItem(BaseModel):
+    role:str
+    content:str
+
 class ChatRequest(BaseModel):
-    message: str
+    message:str
+    history:list[MessageItem]=[]
 
 
 async def getVectorStore():
@@ -137,7 +144,7 @@ async def embed_chunks(document_chunks):
     await vector_store.aadd_documents(document_chunks)
 
 
-async def retrieve_context(query,vector_store,k=2,threshold_score=0.8):
+async def retrieve_context(query,vector_store,k=2,threshold_score=1.2):
     releventDocuments=await vector_store.asimilarity_search_with_score(query,k=k)
     filteredDocuments=[]
     for releventDocument,score in releventDocuments:
@@ -147,22 +154,30 @@ async def retrieve_context(query,vector_store,k=2,threshold_score=0.8):
     return filteredDocuments
 
 
-async def generateAnswers(filterDocuments,query):
+
+async def generateAnswers(filterDocuments,query,history=[],studentId="2026-CS-64"):
+    # if not filterDocuments:
+    #     return None
     
-   
+    student_context_json = get_student_profile_json(studentId)
 
-    if not filterDocuments:
-        return None
-    
-    releventText = "\n\n".join([doc.page_content for doc in filterDocuments])
+    releventText = "\n\n".join([doc.page_content for doc in filterDocuments]) if filterDocuments else "No specific general knowledge chunks retrieved."
+
+    system_instruction = (
+        "You are an AI Virtual Invigilator & Support Assistant for university exams. "
+        "Answer student questions using BOTH the 'AUTHENTICATED STUDENT RECORD' and 'KNOWLEDGE BASE DOCUMENTS'. "
+        "For personal queries (grades, schedules, seat numbers, convocation), refer strictly to the student record. "
+        "If the answer cannot be found in either source, politely respond: "
+        "'I am sorry, but the provided system records and documentation do not contain that information.'"
+    )
+
+    formatted_history=""
+    for msg in history[-6:]:
+        role_label="User" if msg.role=="user" else "Assistant"
+        formatted_history+=f"{role_label}: {msg.content}\n"
 
 
-
-
-    system_instruction="You are a strict technical assitant. Only answer question from the context that is provided to you  " \
-    "if the query has something that isnt in the context reply with 'I am sorry but the provided documentation does not contain that information'." \
-    
-    prompt_content=f"Context Chunks:{releventText}\n\nQuestion:{query}"
+    prompt_content=f"Context Chunks:{releventText}\n\nConversation History: \n{formatted_history}\nCurrent User Question:{query}\nAUTHENTICATED STUDENT RECORD (JSON): {student_context_json}"
 
     reponse=await client.aio.models.generate_content_stream(
         model="gemini-3.5-flash",
@@ -177,9 +192,6 @@ async def generateAnswers(filterDocuments,query):
             )
         )
     )
-
-                    
-
     return reponse
 
 
@@ -225,7 +237,7 @@ async def GenerateRespone():
     print("Retrieving relevant documents...")
     start_time=time.time()
     vectorStore=await createVectorStore()
-    releventDocuments=await retrieve_context(query,vectorStore,4,0.7)
+    releventDocuments=await retrieve_context(query,vectorStore,4,1.2)
     print(f"DataBase retrieval time: {time.time()-start_time} seconds")
     start_time=time.time()
     print("Retrieving relevant response from LLM...")
@@ -240,14 +252,16 @@ async def ingestionPipeline(filePath):
 
 
 
+
 @app.post("/api/chat/stream")
-async def streamChatbotApi(payload:ChatRequest,authorization:str=Header(None)):
+async def streamChatbotApi(payload:ChatRequest,studentId:str=Header(default="2026-CS-64")):
     query=payload.message
+    history=payload.history
 
     try: 
         vectorStore=await getVectorStore()
         releventDocuments=await retrieve_context(query,vectorStore,2,0.8)
-        geminiStream=await generateAnswers(releventDocuments,query)
+        geminiStream=await generateAnswers(releventDocuments,query,history,studentId)
     except Exception as e:
         raise HTTPException(status_code=500,detail=f"Backend proccessing failure: {str(e)}")
     
